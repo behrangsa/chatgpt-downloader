@@ -1,2 +1,3 @@
-# opengpt-downloader
-Downloads all your OpenGPT conversations
+# ChatGPT Downloader
+
+A tool for downloads all your ChatGPT conversations.
