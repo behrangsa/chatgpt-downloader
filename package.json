@@ -1,8 +1,8 @@
 {
-  "name": "opengpt-downloader",
+  "name": "chatgpt-downloader",
   "version": "0.0.2",
-  "description": "",
-  "main": "index.js",
+  "description": "A tool for downloading your ChatGPT conversations",
+  "main": "dist/index.js",
   "scripts": {
     "test": "jest",
     "build": "tsc",
