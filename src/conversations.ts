@@ -1,75 +1,99 @@
 import axios from "axios";
 import fs from "fs";
+import {
+  ConversationDetails,
+  ConversationItem,
+  ConversationResponse,
+} from "./types";
 
-const method = "GET";
-const endpoint = "https://chat.openai.com/backend-api/conversations";
-const offsetParam = "offset";
-const limitParam = "limit";
-
-const getItemMethod = "GET";
-const getItemEndpoint =
-  "https://chat.openai.com/backend-api/conversation/{uuid}";
-
-const shortAwaitDuration = 100;
-const longAwaitDuration = 60000;
-
-export type ConversationItem = {
-  create_time: string;
-  id: string;
-  title: string;
+const ENDPOINTS = {
+  list: {
+    method: "GET",
+    url: "https://chat.openai.com/backend-api/conversations",
+    offsetParam: "offset",
+    limitParam: "limit",
+    maxLimit: 100,
+  },
+  get: {
+    method: "GET",
+    url: "https://chat.openai.com/backend-api/conversation/{uuid}",
+  },
 };
 
-export type ConversationResponse = {
-  items: ConversationItem[];
-  offset: number;
-  limit: number;
-  total: number;
-};
+const RATELIMIT_WAIT_TIME = 60001;
+const PER_REQUEST_WAIT_TIME = 1250;
 
-export type ConversationDetails = string;
+/**
+ * Fetch a single page of conversation items from the OpenAI API.
+ *
+ * @param {number} offset - The offset to use for the request
+ * @param {number} limit - The limit to use for the request
+ * @param {Record<string, string>} headers - The headers to use for the request
+ *
+ * @returns {Promise<ConversationResponse>} - A page of conversation items
+ */
+export async function getConversationPage(
+  offset: number,
+  limit: number,
+  headers: Record<string, string>
+): Promise<ConversationResponse> {
+  const { method, url, offsetParam, limitParam } = ENDPOINTS.list;
+
+  const response = await axios.request<ConversationResponse>({
+    url: url,
+    method,
+    headers,
+    params: {
+      [offsetParam]: offset,
+      [limitParam]: limit,
+    },
+  });
+
+  await new Promise((resolve) => setTimeout(resolve, PER_REQUEST_WAIT_TIME));
+
+  return response.data;
+}
 
 /**
  * Fetch all conversation items from the OpenAI API.
  *
+ * Any time the response is not successful or an error is thrown, wait a bit and try again.
+ *
  * @param {Record<string, string>} headers - The headers to use for the request
  * @returns {Promise<ConversationItem[]>} - A list of conversation objects
  */
-export async function getAllConversations(
+export async function getAllConversationPages(
   headers: Record<string, string>
 ): Promise<ConversationItem[]> {
+  const { maxLimit } = ENDPOINTS.list;
   const conversations: ConversationItem[] = [];
 
   let offset = 0;
-  let limit = 100;
-  let total = 1;
+  let limit = maxLimit;
+  let total = 0;
 
-  while (conversations.length < total) {
-    const response = await axios.request<ConversationResponse>({
-      url: endpoint,
-      method,
-      headers,
-      params: {
-        [offsetParam]: offset,
-        [limitParam]: limit,
-      },
-    });
-    conversations.push(...response.data.items);
-    offset += limit;
-    total = response.data.total;
+  do {
+    try {
+      const response = await getConversationPage(offset, limit, headers);
+      conversations.push(...response.items);
+      offset = response.offset;
+      limit = response.limit;
+      total = response.total;
+    } catch (error) {
+      console.error(
+        `Error fetching conversation page (offset = ${offset}, limit = ${limit}). Waiting ${RATELIMIT_WAIT_TIME} ms and trying again.`
+      );
+      await new Promise((resolve) => setTimeout(resolve, RATELIMIT_WAIT_TIME));
+    }
+  } while (conversations.length < total);
 
-    // Wait a bit to avoid rate limiting
-    await new Promise((resolve) => setTimeout(resolve, shortAwaitDuration));
-  }
-
-  console.info(`Fetched ${conversations.length} conversations.`);
+  console.info(`Found ${conversations.length} conversations.`);
 
   return conversations;
 }
 
 /**
  * Given a conversation `uuid`, fetch the conversation detail from the OpenAI API.
- *
- * If the response is not successful or an error is thrown, wait 60 seconds and try again.
  *
  * @param {string} uuid - The conversation uuid
  * @param {Record<string, string>} headers - The headers to use for the request
@@ -78,39 +102,44 @@ export async function getConversationDetails(
   uuid: string,
   headers: Record<string, string>
 ): Promise<ConversationDetails> {
-  const endpoint = getItemEndpoint.replace("{uuid}", uuid);
+  const { method, url } = ENDPOINTS.get;
 
-  try {
-    const response = await axios.request<ConversationDetails>({
-      url: endpoint,
-      method: getItemMethod,
-      headers,
-    });
+  const response = await axios.request<ConversationDetails>({
+    url: url.replace("{uuid}", uuid),
+    method: method,
+    headers,
+  });
 
-    await new Promise((resolve) => setTimeout(resolve, shortAwaitDuration));
+  await new Promise((resolve) => setTimeout(resolve, PER_REQUEST_WAIT_TIME));
 
-    return response.data;
-  } catch (error) {
-    console.error(
-      `Error fetching conversation details for ${uuid}. Waiting 60 seconds and trying again.`
-    );
-    await new Promise((resolve) => setTimeout(resolve, longAwaitDuration));
-    return getConversationDetails(uuid, headers);
-  }
+  return response.data;
 }
 
+/**
+ * Return a dictionary of conversation details, keyed by conversation uuid.
+ *
+ * @param {Record<string, string>} headers - The headers to use for the request
+ * @returns {Promise<Record<string, ConversationDetails>>} - A dictionary of conversation details
+ */
 export async function getAllConversationDetails(
   headers: Record<string, string>
 ): Promise<Record<string, ConversationDetails>> {
-  const conversations = await getAllConversations(headers);
+  const conversationItems = await getAllConversationPages(headers);
   const conversationDetails: Record<string, ConversationDetails> = {};
 
-  for (const conversation of conversations) {
-    console.info(`Fetching details for conversation ${conversation.id}...`);
-    conversationDetails[conversation.id] = await getConversationDetails(
-      conversation.id,
-      headers
-    );
+  for (const item of conversationItems) {
+    try {
+      console.info(`Fetching details for conversation ${item.id}...`);
+      conversationDetails[item.id] = await getConversationDetails(
+        item.id,
+        headers
+      );
+    } catch (error) {
+      console.error(
+        `Error fetching conversation details for ${item.id}. Waiting ${RATELIMIT_WAIT_TIME}ms and trying again.`
+      );
+      await new Promise((resolve) => setTimeout(resolve, RATELIMIT_WAIT_TIME));
+    }
   }
 
   return conversationDetails;
@@ -119,12 +148,15 @@ export async function getAllConversationDetails(
 /**
  * Save all conversation details to a file.
  *
- * @param headers
+ * @param {string} outputPath - The path to save the conversation details to
+ * @param {Record<string, string>} headers - The headers to use for the request
  */
 export async function saveAllConversationDetails(
   outputPath: string,
   headers: Record<string, string>
 ): Promise<void> {
   const conversationDetails = await getAllConversationDetails(headers);
-  fs.writeFileSync(outputPath, JSON.stringify(conversationDetails));
+
+  console.info(`Saving conversation details to ${outputPath}...`);
+  fs.writeFileSync(outputPath, JSON.stringify(conversationDetails, null, 2));
 }
