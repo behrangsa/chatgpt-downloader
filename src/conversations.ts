@@ -146,6 +146,23 @@ export async function getAllConversationDetails(
 }
 
 /**
+ * Return a generator of conversation details.
+ *
+ * @param {Record<string, string>} headers - The headers to use for the request
+ * @returns {AsyncGenerator<ConversationDetails>} - A generator of conversation details
+ */
+export async function* getAllConversationDetailsGenerator(
+  headers: Record<string, string>
+): AsyncGenerator<ConversationDetails> {
+  const conversationItems = await getAllConversationPages(headers);
+
+  for (const item of conversationItems) {
+    console.info(`Fetching details for conversation ${item.id}...`);
+    yield await getConversationDetails(item.id, headers);
+  }
+}
+
+/**
  * Save all conversation details to a file.
  *
  * @param {string} outputPath - The path to save the conversation details to
@@ -159,4 +176,23 @@ export async function saveAllConversationDetails(
 
   console.info(`Saving conversation details to ${outputPath}...`);
   fs.writeFileSync(outputPath, JSON.stringify(conversationDetails, null, 2));
+}
+
+/**
+ * Display all conversation details to the console.
+ *
+ * @param {Record<string, string>} headers - The headers to use for the request
+ */
+export async function displayAllConversationDetails(
+  headers: Record<string, string>
+): Promise<void> {
+  const allConversationDetails = getAllConversationDetailsGenerator(headers);
+  do {
+    const conversation = await allConversationDetails.next();
+    if (conversation.done) {
+      break;
+    }
+
+    console.log(JSON.stringify(conversation.value, null, 2));
+  } while (true);
 }
